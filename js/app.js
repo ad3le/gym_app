@@ -6,7 +6,7 @@ import {
 const app = document.getElementById('app');
 const restEl = document.getElementById('rest');
 const st = () => store.state;
-const save = () => store.save();
+const save = () => { if (!store.save()) toast('Phone storage is full. Try removing some photos.'); };
 
 // ---------- helpers ----------
 
@@ -48,7 +48,57 @@ function thumb(ex, { done = false, size = '' } = {}) {
   if (!ex) return '';
   const ini = ex.name.split(/[\s-]+/).filter(w => /[A-Za-z0-9]/.test(w)).slice(0, 2).map(w => w[0].toUpperCase()).join('');
   const check = done ? `<span class="thumb-check">${ICONS.check}</span>` : '';
+  if (ex.image) return `<span class="thumb img ${size}"><img src="${esc(ex.image)}" alt="" loading="lazy">${check}</span>`;
   return `<span class="thumb ${size}" style="--c:${MUSCLE_COLORS[ex.muscle] || '#8e8e93'}">${esc(ini)}${check}</span>`;
+}
+
+// Shrink a picked/taken photo so lots of them fit in the phone's app storage.
+function readPhoto(file, max = 480) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', 0.72));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that photo')); };
+    img.src = url;
+  });
+}
+
+const photoPicker = (value = '') => `<div class="photo-field">
+    <input type="hidden" name="image" value="${esc(value)}">
+    <div class="photo-preview">${value ? `<img src="${esc(value)}" alt="">` : `<span class="muted">No photo</span>`}</div>
+    <div class="photo-actions">
+      <label class="btn">${value ? 'Change photo' : 'Add photo'}<input type="file" accept="image/*" hidden></label>
+      <button type="button" class="btn ghost danger" data-photo-remove ${value ? '' : 'hidden'}>Remove photo</button>
+    </div>
+  </div>`;
+
+function bindPhotoPicker(root) {
+  const box = root.querySelector('.photo-field');
+  if (!box) return;
+  const hidden = box.querySelector('input[name=image]');
+  const preview = box.querySelector('.photo-preview');
+  const removeBtn = box.querySelector('[data-photo-remove]');
+  const label = box.querySelector('label.btn');
+  const show = v => {
+    hidden.value = v;
+    preview.innerHTML = v ? `<img src="${esc(v)}" alt="">` : '<span class="muted">No photo</span>';
+    removeBtn.hidden = !v;
+    label.firstChild.textContent = v ? 'Change photo' : 'Add photo';
+  };
+  box.querySelector('input[type=file]').onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try { show(await readPhoto(file)); } catch (err) { toast(err.message); }
+  };
+  removeBtn.onclick = () => show('');
 }
 
 function exSubtitle(ex) {
@@ -95,6 +145,7 @@ function menuSheet(title, items) {
 function formSheet({ title, fields, submitLabel = 'Save', onSubmit, danger }) {
   const field = f => {
     let input;
+    if (f.type === 'photo') return `<div class="field"><span>${esc(f.label)}</span>${photoPicker(f.value)}</div>`;
     if (f.type === 'select') {
       input = `<select name="${f.name}">${f.options.map(o => {
         const [v, l] = Array.isArray(o) ? o : [o, o];
@@ -111,6 +162,7 @@ function formSheet({ title, fields, submitLabel = 'Save', onSubmit, danger }) {
     ${danger ? `<button class="btn danger" type="button" data-danger>${esc(danger.label)}</button>` : ''}</form>`;
   openSheet(html, sh => {
     const form = sh.querySelector('form');
+    bindPhotoPicker(sh);
     form.onsubmit = e => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(form));
@@ -134,12 +186,13 @@ function exerciseForm(ex, onSaved) {
       { name: 'kind', label: 'Log sets as', type: 'select', value: ex?.kind || 'weight', options: Object.entries(KINDS) },
       { name: 'equipment', label: 'Equipment (optional)', value: ex?.equipment, placeholder: 'e.g. Dumbbells' },
       { name: 'muscle', label: 'Group', type: 'select', value: ex?.muscle || 'Other', options: MUSCLES },
+      { name: 'image', label: 'Photo', type: 'photo', value: ex?.image || '' },
     ],
     onSubmit: d => {
       const name = d.name.trim();
       if (!name) return;
       const target = editing ? ex : { id: uid() };
-      Object.assign(target, { name, kind: d.kind, equipment: d.equipment.trim(), muscle: d.muscle });
+      Object.assign(target, { name, kind: d.kind, equipment: d.equipment.trim(), muscle: d.muscle, image: d.image || '' });
       if (!editing) st().exercises.push(target);
       save();
       onSaved?.(target);
@@ -810,7 +863,11 @@ function viewExercise(id) {
     .map(w => ({ w, sets: w.entries.filter(e => e.exerciseId === id).flatMap(e => e.sets.filter(x => x.done)) }))
     .filter(r => r.sets.length);
   const suffix = kindOf(ex) === 'reps' ? ' reps' : '';
+  const photo = ex.image
+    ? `<button class="hero" data-act="edit" aria-label="Change photo"><img src="${esc(ex.image)}" alt=""></button>`
+    : `<button class="hero empty" data-act="edit">${icon('plus')} Add a photo</button>`;
   const html = `${topbar(backBtn('#/exercises'), '', '<button class="link" data-act="edit">Edit</button>')}
+    ${photo}
     <h1 class="h1 blue">${esc(ex.name)}</h1>
     <p class="muted">${exSubtitle(ex) || '&nbsp;'} · ${esc(KINDS[kindOf(ex)])}</p>
     ${rows.length ? rows.map(({ w, sets }) => `<a class="card hist" href="#/workout/${w.id}">

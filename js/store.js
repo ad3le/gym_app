@@ -49,10 +49,22 @@ const DEFAULT_EXERCISES = [
   ['Rowing Machine', '', 'Cardio', 'time'],
 ];
 
+// Photos for the built-in exercises, from the public-domain free-exercise-db
+// (github.com/yuhonas/free-exercise-db). Custom exercises can use your own photo.
+const DEFAULT_IMAGES = Object.fromEntries([
+  'Bench Press', 'Incline Press', 'Push-up', 'Chest Fly', 'Deadlift', 'Pull-up', 'Lat Pulldown', 'Bent-over Row',
+  'Seated Cable Row', 'Seated Shoulder Press', 'Overhead Press', 'Lateral Raise', 'Face Pull', 'Bicep Curl',
+  'Hammer Curl', 'Tricep Pushdown', 'Squat', 'Leg Press', 'Leg Extension', 'Leg Curl', 'Romanian Deadlift',
+  'Bulgarian Split Squat', 'Calf Raise', 'Hip Thrust', 'Glute Bridge', 'Hanging Leg Raise', 'Dead Bug',
+  'Shoulder Mobility Warm-up', 'Hip Mobility Warm-up', 'Band Pull-apart', 'Treadmill', 'Rowing Machine',
+].map(name => [name, `images/exercises/${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.jpg`]));
+
 function fresh() {
   return {
     version: 1,
-    exercises: DEFAULT_EXERCISES.map(([name, equipment, muscle, kind]) => ({ id: uid(), name, equipment, muscle, kind })),
+    exercises: DEFAULT_EXERCISES.map(([name, equipment, muscle, kind]) => ({
+      id: uid(), name, equipment, muscle, kind, image: DEFAULT_IMAGES[name] || '',
+    })),
     plans: [],
     activePlanId: null,
     workouts: [],
@@ -64,6 +76,10 @@ function fresh() {
 
 function migrate(s) {
   const d = fresh();
+  // Data saved before photos existed: give built-in exercises their photo.
+  for (const ex of s.exercises || []) {
+    if (ex.image === undefined) ex.image = DEFAULT_IMAGES[ex.name] || '';
+  }
   return { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) } };
 }
 
@@ -80,7 +96,13 @@ function load() {
 export const store = {
   state: load(),
   save() {
-    try { localStorage.setItem(KEY, JSON.stringify(this.state)); } catch (e) { console.error(e); }
+    try {
+      localStorage.setItem(KEY, JSON.stringify(this.state));
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
   },
   replace(s) { this.state = migrate(s); this.save(); },
   reset() { this.state = fresh(); this.save(); },
