@@ -409,10 +409,17 @@ function viewHome() {
       </div>
       ${plan.days.map((d, i) => dayCard(plan, d, i)).join('') || '<p class="muted">This routine has no days yet.</p>'}`;
   } else {
-    planHtml = `<div class="card empty">
+    const last = finishedWorkouts()[0];
+    planHtml = last ? `<div class="card empty">
+      <p><b>Do your last workout again</b></p>
+      <p class="muted">Save "${esc(last.name)}" from ${fmtDate(last.startedAt)} as a routine. It will show up here so you can start it with one tap.</p>
+      <button class="btn blue" data-act="from-last">${icon('plus')} Save it as a routine</button>
+      <button class="btn ghost" data-act="create">Build a routine from scratch</button></div>`
+      : `<div class="card empty">
       <p><b>Set up your routine</b></p>
       <p class="muted">Add your training days and the exercises you do on each one. Then tap a day to start logging.</p>
-      <button class="btn blue" data-act="create">${icon('plus')} Create routine</button></div>`;
+      <button class="btn blue" data-act="create">${icon('plus')} Create routine</button>
+      <p class="muted small" style="margin-top:12px">Or just start an empty workout below. You can save it as a routine afterwards.</p></div>`;
   }
 
   const html = `
@@ -429,6 +436,7 @@ function viewHome() {
 
   const actions = {
     create: () => createPlan(),
+    'from-last': () => saveAsRoutine(finishedWorkouts()[0]),
     quick: () => { const w = startWorkout(null, null); go('/workout/' + w.id); },
     'open-day': t => openDaySheet(plan, plan.days.find(d => d.id === t.dataset.day)),
     day: t => {
@@ -483,6 +491,59 @@ function openDaySheet(plan, day) {
       else if (a === 'edit') go('/plan/' + plan.id);
     };
   });
+}
+
+// Turn a logged workout into a routine day: same exercises, set counts, reps/time and warm-ups.
+function workoutToDay(w, name) {
+  return {
+    id: uid(),
+    name,
+    items: w.entries.map(e => {
+      const f = kindOf(exById(e.exerciseId)) === 'time' ? 'sec' : 'reps';
+      const work = e.sets.filter(x => !x.warmup && (x.done || !w.finishedAt));
+      const last = [...work].reverse().find(x => x[f] !== '' && x[f] != null);
+      return {
+        id: uid(),
+        exerciseId: e.exerciseId,
+        sets: work.length || 3,
+        target: e.target !== '' && e.target != null ? e.target : (last?.[f] ?? ''),
+        warmups: e.sets.filter(x => x.warmup).length,
+      };
+    }),
+  };
+}
+
+function saveAsRoutine(w) {
+  if (!w?.entries.length) { toast('Add some exercises first'); return; }
+  const s = st();
+  const dayName = n => (w.name && w.name !== 'Workout' ? w.name : `Day ${n}`);
+  const link = (plan, day) => {
+    // Count this workout as that day, so it shows as done this week.
+    if (w.finishedAt) { w.planId = plan.id; w.dayId = day.id; }
+    s.activePlanId = plan.id;
+    save();
+    const msg = `Saved! Tap ${day.name} to do it again`;
+    if (['', '#', '#/'].includes(location.hash)) { render(); toast(msg); } else { go('/'); afterNav(() => toast(msg)); }
+  };
+  const asNew = () => {
+    const day = workoutToDay(w, dayName(1));
+    const plan = { id: uid(), name: 'My routine', createdAt: w.startedAt, days: [day] };
+    s.plans.push(plan);
+    link(plan, day);
+  };
+  if (!s.plans.length) { asNew(); return; }
+  menuSheet('Save as routine', [
+    ...s.plans.map(p => ({
+      label: `Add as a day to "${p.name}"`,
+      onClick: () => { const day = workoutToDay(w, dayName(p.days.length + 1)); p.days.push(day); link(p, day); },
+    })),
+    { label: 'Start a new routine with it', onClick: asNew },
+  ]);
+}
+
+// Run fn once the next screen has rendered (navigation closes open sheets).
+function afterNav(fn) {
+  window.addEventListener('hashchange', () => setTimeout(fn, 0), { once: true });
 }
 
 function createPlan() {
@@ -545,6 +606,7 @@ function viewWorkout(id) {
     }),
     finish: () => finishFlow(w),
     wmenu: () => menuSheet(w.name, [
+      { label: 'Save as routine', onClick: () => saveAsRoutine(w) },
       { label: 'Share this workout', onClick: () => shareText(w.name, workoutText(w)) },
       { label: 'Change date', onClick: () => changeDate(w) },
       { label: 'Delete workout', danger: true, onClick: () => deleteWorkout(w) },
@@ -635,8 +697,11 @@ function exercisePanel(w, entry, ex) {
   const rows = entry.sets.map((x, k) => {
     const label = x.warmup ? 'W' : String(++wn);
     const ph = x.warmup ? {} : (prevWork[wn - 1] || {});
+    // Blank boxes suggest: last session's set, else the set above, else the target.
+    const above = entry.sets.slice(0, k).reverse().find(y => y.warmup === x.warmup) || {};
+    const hint = f => [ph[f], above[f], f !== 'kg' ? entry.target : ''].find(v => v !== '' && v != null) ?? '';
     const inputs = fields.map(f => `<input class="cell in" inputmode="decimal" data-k="${k}" data-f="${f}"
-      value="${esc(x[f])}" placeholder="${esc(ph[f] ?? (f !== 'kg' ? entry.target : ''))}" aria-label="${f}">`).join('');
+      value="${esc(x[f])}" placeholder="${esc(hint(f))}" aria-label="${f}">`).join('');
     const est = kind === 'weight' ? `<span class="cell est" data-est="${k}">${x.warmup ? '' : fmtNum(estNRM(x.kg, x.reps, n))}</span>` : '';
     return `<div class="set-row cols-${fields.length} ${x.done ? 'done' : ''} ${x.warmup ? 'warm' : ''}">
       <button class="cell num" data-act="set-menu" data-k="${k}">${label}</button>${inputs}${est}
@@ -685,7 +750,15 @@ function finishFlow(w) {
     save();
     curEx.delete(w.id);
     go('/');
-    toast(`Workout saved · ${durationMin(w)} min`);
+    afterNav(() => {
+      toast(`Workout saved · ${durationMin(w)} min`);
+      if (!w.dayId && w.entries.length) {
+        menuSheet('Want to do this workout again?', [
+          { label: 'Save it as a routine', onClick: () => saveAsRoutine(w) },
+          { label: 'Not now', onClick: () => {} },
+        ]);
+      }
+    });
   };
   if (!unchecked) { finish('discard'); return; }
   const items = [
